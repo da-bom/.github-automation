@@ -54,6 +54,15 @@ jobs:
           private-key: ${{ secrets.PRIVATE_KEY }}
           owner: ${{ vars.ORG_NAME }}
 
+      - name: Ensure Labels Exist
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          REPO="${{ vars.ORG_NAME }}/${{ github.event.client_payload.repoName }}"
+          for label in $(echo '${{ toJson(github.event.client_payload.labels) }}' | jq -r '.[]'); do
+            gh label create "$label" --repo "$REPO" --force 2>/dev/null || true
+          done
+
       - name: Create GitHub Issue
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -62,7 +71,6 @@ jobs:
           TITLE="${{ github.event.client_payload.title }}"
           BODY="${{ github.event.client_payload.body }}"
 
-          # labels 배열 → --label 플래그로 변환
           LABEL_FLAGS=""
           for label in $(echo '${{ toJson(github.event.client_payload.labels) }}' | jq -r '.[]'); do
             LABEL_FLAGS="$LABEL_FLAGS --label $label"
