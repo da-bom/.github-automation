@@ -75,7 +75,7 @@ jobs:
             $LABEL_FLAGS
 
       - name: Slack Failure Alert
-        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
+        if: ${{ failure() && secrets.SLACK_WEBHOOK_URL != '' }}
         run: |
           curl -s -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
