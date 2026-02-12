@@ -1,0 +1,102 @@
+# =============================================================================
+# Jira Update Dispatch Handler
+# =============================================================================
+#
+# 개요:
+#   Jira SubTask의 description이 수정되면 repository_dispatch 이벤트를 통해
+#   대상 Repo의 GitHub Issue body를 업데이트한다.
+#   기존 Issue body의 "상세 내용" 섹션만 교체하고 나머지는 유지한다.
+#
+# 흐름:
+#   Jira SubTask description 수정
+#     → Jira Automation이 repository_dispatch (event_type: update_issue) 호출
+#     → payload에서 repoName, issueKey, description 추출
+#     → GitHub Issue 검색 (제목의 [KEY] 패턴으로)
+#     → 상세 내용 섹션만 교체하여 Issue body 업데이트
+#
+# -----------------------------------------------------------------------------
+# Required Secrets / Variables: jira-dispatch.yml과 동일
+# -----------------------------------------------------------------------------
+#   APP_ID, PRIVATE_KEY, ORG_NAME
+#
+# Dispatch Payload (Jira Automation이 보내는 client_payload):
+# -----------------------------------------------------------------------------
+#   client_payload.repoName    - 대상 레포 이름 (예: web-core)
+#   client_payload.issueKey    - Jira Issue Key (예: DABOM-42)
+#   client_payload.description - 수정된 Jira description
+# =============================================================================
+
+name: Jira Update Dispatch Handler
+
+on:
+  repository_dispatch:
+    types: [update_issue]
+
+jobs:
+  update-issue:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+          owner: ${{ vars.ORG_NAME }}
+
+      - name: Find and Update GitHub Issue
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_KEY: ${{ github.event.client_payload.issueKey }}
+          NEW_DESCRIPTION: ${{ github.event.client_payload.description }}
+        run: |
+          REPO="${{ vars.ORG_NAME }}/${{ github.event.client_payload.repoName }}"
+
+          # 제목에서 [ISSUE-KEY]로 GitHub Issue 검색
+          ISSUE_NUMBER=$(gh issue list --repo "$REPO" --search "[${ISSUE_KEY}]" --json number,title --jq ".[] | select(.title | startswith(\"[${ISSUE_KEY}]\")) | .number")
+
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "::error::Issue not found for key: ${ISSUE_KEY}"
+            exit 1
+          fi
+
+          # 현재 Issue body 가져오기
+          gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json body --jq '.body' > /tmp/current_body.md
+
+          # 상세 내용 섹션만 교체 (나머지 섹션 유지)
+          # Part 1: 상세 내용 heading까지
+          awk '/상세 내용/{print; exit} {print}' /tmp/current_body.md > /tmp/updated_body.md
+
+          # Part 2: 새로운 description 삽입
+          echo "" >> /tmp/updated_body.md
+          echo "$NEW_DESCRIPTION" > /tmp/new_desc_raw.md
+          sed \
+            -e 's/^h1\. /# /g' \
+            -e 's/^h2\. /## /g' \
+            -e 's/^h3\. /### /g' \
+            -e 's/^h4\. /#### /g' \
+            -e 's/^h5\. /##### /g' \
+            -e 's/^h6\. /###### /g' \
+            -e 's/^\* \[/- [/g' \
+            /tmp/new_desc_raw.md >> /tmp/updated_body.md
+          echo "" >> /tmp/updated_body.md
+
+          # Part 3: 기타 사항 heading부터 끝까지
+          awk '/기타 사항/{flag=1} flag{print}' /tmp/current_body.md >> /tmp/updated_body.md
+
+          # Issue 업데이트
+          gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --body-file /tmp/updated_body.md
+
+          echo "Updated issue #${ISSUE_NUMBER} in ${REPO} for ${ISSUE_KEY}"
+
+      - name: Slack Failure Alert
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -s -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "{\"text\": \"Jira → GitHub issue update failed: ${ISSUE_KEY} / repo: ${{ github.event.client_payload.repoName }}\"}"
+          fi
