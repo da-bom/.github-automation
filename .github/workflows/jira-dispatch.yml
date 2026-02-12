@@ -71,9 +71,13 @@ jobs:
           REPO="${{ vars.ORG_NAME }}/${{ github.event.client_payload.repoName }}"
           TITLE="${{ github.event.client_payload.title }}"
 
-          # Jira wiki markup → Markdown 변환
+          # 라벨 기반 브랜치 prefix (Feat → feat, Fix → fix 등)
+          BRANCH_PREFIX=$(echo '${{ toJson(github.event.client_payload.labels) }}' | jq -r '.[0] // "feat"' | tr '[:upper:]' '[:lower:]')
+
+          # Jira wiki markup → Markdown 변환 + 브랜치 prefix 치환
           echo "$ISSUE_BODY" > /tmp/issue_body.md
           sed -i \
+            -e "s/__BRANCH_PREFIX__/${BRANCH_PREFIX}/g" \
             -e 's/^h1\. /# /g' \
             -e 's/^h2\. /## /g' \
             -e 's/^h3\. /### /g' \
