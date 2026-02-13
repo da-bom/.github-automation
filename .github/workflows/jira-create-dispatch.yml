@@ -33,6 +33,7 @@
 #   client_payload.title     - GitHub Issue 제목 (예: [ABC-123] 로그인 오류 수정)
 #   client_payload.body      - GitHub Issue 본문 (Markdown)
 #   client_payload.labels    - GitHub Issue 라벨 배열 (예: ["feat", "backend"])
+#   client_payload.assignee  - Jira 담당자 이름 (예: 홍길동, 미할당 시 빈 문자열)
 # =============================================================================
 
 name: Jira Create Dispatch Handler
@@ -57,16 +58,23 @@ jobs:
       - name: Ensure Labels Exist
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ASSIGNEE: ${{ github.event.client_payload.assignee }}
         run: |
           REPO="${{ vars.ORG_NAME }}/${{ github.event.client_payload.repoName }}"
           for label in $(echo '${{ toJson(github.event.client_payload.labels) }}' | jq -r '.[]'); do
             gh label create "$label" --repo "$REPO" --force 2>/dev/null || true
           done
 
+          # 담당자 라벨 생성
+          if [ -n "$ASSIGNEE" ]; then
+            gh label create "${ASSIGNEE}" --repo "$REPO" --color "1d76db" --force 2>/dev/null || true
+          fi
+
       - name: Create GitHub Issue
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ISSUE_BODY: ${{ github.event.client_payload.body }}
+          ASSIGNEE: ${{ github.event.client_payload.assignee }}
         run: |
           REPO="${{ vars.ORG_NAME }}/${{ github.event.client_payload.repoName }}"
           TITLE="${{ github.event.client_payload.title }}"
@@ -92,6 +100,11 @@ jobs:
             LABEL_FLAGS="$LABEL_FLAGS --label $label"
           done
 
+          # 담당자 라벨 추가
+          if [ -n "$ASSIGNEE" ]; then
+            LABEL_FLAGS="$LABEL_FLAGS --label ${ASSIGNEE}"
+          fi
+
           ISSUE_URL=$(gh issue create \
             --repo "$REPO" \
             --title "$TITLE" \
@@ -104,9 +117,10 @@ jobs:
           echo "========================================="
           echo "  Issue Created Successfully"
           echo "========================================="
-          echo "  Title: ${TITLE}"
-          echo "  Repo:  ${REPO}"
-          echo "  URL:   ${ISSUE_URL}"
+          echo "  Title:    ${TITLE}"
+          echo "  Repo:     ${REPO}"
+          echo "  Assignee: ${ASSIGNEE:-없음}"
+          echo "  URL:      ${ISSUE_URL}"
           echo "========================================="
 
       - name: Slack Failure Alert
