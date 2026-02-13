@@ -1,5 +1,5 @@
 # =============================================================================
-# Jira Dispatch Handler
+# Jira Create Dispatch Handler
 # =============================================================================
 #
 # 개요:
@@ -35,7 +35,7 @@
 #   client_payload.labels    - GitHub Issue 라벨 배열 (예: ["feat", "backend"])
 # =============================================================================
 
-name: Jira Dispatch Handler
+name: Jira Create Dispatch Handler
 
 on:
   repository_dispatch:
@@ -92,11 +92,22 @@ jobs:
             LABEL_FLAGS="$LABEL_FLAGS --label $label"
           done
 
-          gh issue create \
+          ISSUE_URL=$(gh issue create \
             --repo "$REPO" \
             --title "$TITLE" \
             --body-file /tmp/issue_body.md \
-            $LABEL_FLAGS
+            $LABEL_FLAGS)
+
+          echo "::notice::Created issue: ${TITLE}"
+          echo "::notice::URL: ${ISSUE_URL}"
+          echo ""
+          echo "========================================="
+          echo "  Issue Created Successfully"
+          echo "========================================="
+          echo "  Title: ${TITLE}"
+          echo "  Repo:  ${REPO}"
+          echo "  URL:   ${ISSUE_URL}"
+          echo "========================================="
 
       - name: Slack Failure Alert
         if: failure()

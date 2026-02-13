@@ -16,7 +16,7 @@
 #     → 제목 업데이트 + 상세 내용 섹션 교체
 #
 # -----------------------------------------------------------------------------
-# Required Secrets / Variables: jira-dispatch.yml과 동일
+# Required Secrets / Variables: jira-create-dispatch.yml과 동일
 # -----------------------------------------------------------------------------
 #   APP_ID, PRIVATE_KEY, ORG_NAME
 #
@@ -94,7 +94,17 @@ jobs:
           # body 업데이트 (description 변경 반영)
           gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --body-file /tmp/updated_body.md
 
-          echo "Updated issue #${ISSUE_NUMBER} in ${REPO} for ${ISSUE_KEY}"
+          ISSUE_URL="https://github.com/${REPO}/issues/${ISSUE_NUMBER}"
+          echo "::notice::Updated issue: [${ISSUE_KEY}] ${NEW_SUMMARY}"
+          echo "::notice::URL: ${ISSUE_URL}"
+          echo ""
+          echo "========================================="
+          echo "  Issue Updated Successfully"
+          echo "========================================="
+          echo "  Title: [${ISSUE_KEY}] ${NEW_SUMMARY}"
+          echo "  Repo:  ${REPO}"
+          echo "  URL:   ${ISSUE_URL}"
+          echo "========================================="
 
       - name: Slack Failure Alert
         if: failure()
