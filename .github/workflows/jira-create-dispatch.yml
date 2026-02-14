@@ -30,6 +30,7 @@
 # Dispatch Payload (Jira Automation이 보내는 client_payload):
 # -----------------------------------------------------------------------------
 #   client_payload.repoName  - Issue를 생성할 대상 레포 이름 (예: web-core)
+#   client_payload.issueKey  - Jira Issue Key (예: DABOM-42, 중복 체크에 사용)
 #   client_payload.title     - GitHub Issue 제목 (예: [ABC-123] 로그인 오류 수정)
 #   client_payload.body      - GitHub Issue 본문 (Markdown)
 #   client_payload.labels    - GitHub Issue 라벨 배열 (예: ["feat", "backend"])
@@ -55,7 +56,26 @@ jobs:
           private-key: ${{ secrets.PRIVATE_KEY }}
           owner: ${{ vars.ORG_NAME }}
 
+      - name: Check Duplicate Issue
+        id: check-duplicate
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          REPO="${{ vars.ORG_NAME }}/${{ github.event.client_payload.repoName }}"
+          ISSUE_KEY="${{ github.event.client_payload.issueKey }}"
+
+          EXISTING=$(gh issue list --repo "$REPO" --search "[${ISSUE_KEY}]" --state all --json number,title \
+            --jq ".[] | select(.title | startswith(\"[${ISSUE_KEY}]\")) | .number")
+
+          if [ -n "$EXISTING" ]; then
+            echo "::warning::Issue already exists for ${ISSUE_KEY}: #${EXISTING}"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Ensure Labels Exist
+        if: steps.check-duplicate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ASSIGNEE: ${{ github.event.client_payload.assignee }}
@@ -65,12 +85,15 @@ jobs:
             gh label create "$label" --repo "$REPO" --force 2>/dev/null || true
           done
 
-          # 담당자 라벨 생성
+          # 담당자 라벨 생성 (이미 존재하면 스킵)
           if [ -n "$ASSIGNEE" ]; then
-            gh label create "${ASSIGNEE}" --repo "$REPO" --color "1d76db" --force 2>/dev/null || true
+            if ! gh label list --repo "$REPO" --search "${ASSIGNEE}" --json name --jq '.[].name' | grep -qx "${ASSIGNEE}"; then
+              gh label create "${ASSIGNEE}" --repo "$REPO" --color "1d76db" 2>/dev/null || true
+            fi
           fi
 
       - name: Create GitHub Issue
+        if: steps.check-duplicate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ISSUE_BODY: ${{ github.event.client_payload.body }}
