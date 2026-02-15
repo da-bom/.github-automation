@@ -1,0 +1,11 @@
+{
+  "event_type": "create_issue",
+  "client_payload": {
+    "repoName": "{{repoName}}",
+    "issueKey": "{{issue.key}}",
+    "title": "[{{issue.key}}] {{issue.summary.jsonEncode}}",
+    "body": "### 🎟️ 지라 티켓 (Ticket Number)\n\n[{{issue.key}}]({{issue.url}})\n\n### 🌳 브랜치명 (Branch)\n\n__BRANCH_PREFIX__/{{issue.key}}\n\n### 📝 상세 내용 (Description)\n\n{{#issue.description}}{{issue.description.jsonEncode}}{{/issue.description}}{{^issue.description}}_No response_{{/issue.description}}\n\n### 📌 기타 사항\n\n- **Type**: {{issue.issueType.name}}\n- **Task**: [{{issue.parent.key}}]({{issue.parent.url}}) {{issue.parent.summary.jsonEncode}}\n- **Epic**: {{issue.parent.parent.summary.jsonEncode}}\n\n---\n\n> 이 이슈는 Jira Automation을 통해 자동 생성되었습니다.",
+    "labels": {{labelsArray}},
+    "assignee": "{{issue.assignee.displayName}}"
+  }
+}

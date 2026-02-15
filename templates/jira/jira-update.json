@@ -1,0 +1,9 @@
+{
+  "event_type": "update_issue",
+  "client_payload": {
+    "repoName": "{{repoName}}",
+    "issueKey": "{{issue.key}}",
+    "summary": "{{issue.summary.jsonEncode}}",
+    "description": "{{#issue.description}}{{issue.description.jsonEncode}}{{/issue.description}}{{^issue.description}}_No response_{{/issue.description}}"
+  }
+}

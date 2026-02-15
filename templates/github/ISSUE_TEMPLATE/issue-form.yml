@@ -1,0 +1,49 @@
+name: '이슈 생성'
+description: 'Repo에 이슈를 생성합니다.'
+title: '[DABOM-xxx] 작업에 대한 요약'
+
+body:
+  - type: input
+    id: issueKey
+    attributes:
+      label: '🎟️ 지라 티켓 (Ticket Number)'
+      description: '해당 SubTask의 Jira Ticket Number를 기입해주세요 (예: DABOM-56, DABOM-123)'
+      value: 'DABOM-xxx'
+    validations:
+      required: true
+
+  - type: input
+    id: branch
+    attributes:
+      label: '🌳 브랜치명 (Branch)'
+      description: '영어로 브랜치명을 작성해주세요 (예: feat/DABOM-56, fix/DABOM-123)'
+      value: '{type}/DABOM-xxx'
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: '📝 상세 내용 (Description)'
+      description: '이슈에 대한 설명과 할 일(TODO)을 함께 작성해주세요'
+      value: |
+        이슈에 대한 설명
+
+        ### ✅ TO-DO LIST
+        - [ ] Task1
+        - [ ] Task2
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: '📌 기타 사항'
+      description: |
+        참고사항, 논의 필요 사항, 스크린샷 링크,
+      placeholder: |
+        - 관련 문서 링크
+        - 논의가 필요한 부분
+        - 추후 작업 예정 사항
+    validations:
+      required: false
