@@ -1,0 +1,191 @@
+# =============================================================================
+# PR Reminder (Organization-wide)
+# =============================================================================
+#
+# 개요:
+#   Organization 내 모든 레포의 Open PR을 조회하여, 일정 시간 이상
+#   업데이트가 없는 PR에 remind-needed 라벨을 부착하고,
+#   업데이트된 PR에서는 라벨을 제거한다.
+#   리마인드 대상 PR이 있으면 하나의 Slack 메시지로 통합 발송한다.
+#
+# 흐름:
+#   Schedule (매 2시간) 또는 수동 트리거
+#     → GitHub App Token 발급
+#     → GitHub Search API로 조직 내 모든 Open PR 조회
+#     → 4시간 이상 비활성 PR에 remind-needed 라벨 부착
+#     → 활성화된 PR에서 remind-needed 라벨 제거
+#     → 리마인드 대상 PR을 레포별로 그룹핑하여 Slack 발송
+#
+# -----------------------------------------------------------------------------
+# Required Secrets:
+#   APP_ID            - GitHub App ID
+#   PRIVATE_KEY       - GitHub App Private Key
+#
+# Required Variables:
+#   ORG_NAME          - GitHub Organization 이름 (예: da-bom)
+#
+# Optional Secrets:
+#   SLACK_WEBHOOK_URL - Slack Incoming Webhook URL (미설정 시 알림 스킵)
+#
+# GitHub App 추가 권한 필요:
+#   Pull Requests: Read & Write (라벨 부착/제거)
+# =============================================================================
+
+name: PR Reminder
+
+on:
+  schedule:
+    # 매 2시간마다 실행 (UTC 기준)
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  pr-reminder:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+          owner: ${{ vars.ORG_NAME }}
+
+      - name: Check org-wide PRs and manage remind labels
+        id: check-prs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG_NAME: ${{ vars.ORG_NAME }}
+          STALE_HOURS: 4
+          REMIND_LABEL: remind-needed
+          EXEMPT_LABELS: wip,blocked,do-not-remind
+        run: |
+          set -euo pipefail
+
+          echo "🔍 조직 '${ORG_NAME}' 내 모든 Open PR 조회 중..."
+
+          # 현재 시각 기준 STALE_HOURS 이전 시각 계산 (ISO 8601)
+          STALE_THRESHOLD=$(date -u -d "${STALE_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "⏱️  비활성 기준 시각: ${STALE_THRESHOLD}"
+
+          # 조직 내 모든 Open PR 조회 (draft 제외)
+          # GitHub Search API: is:pr is:open org:<org> draft:false
+          ALL_PRS=$(gh api --paginate "search/issues?q=is:pr+is:open+org:${ORG_NAME}+draft:false&per_page=100" \
+            --jq '.items[] | {
+              number: .number,
+              title: .title,
+              html_url: .html_url,
+              user: .user.login,
+              updated_at: .updated_at,
+              repo: (.repository_url | split("/") | last),
+              repo_full: (.repository_url | split("/")[-2:] | join("/")),
+              labels: [.labels[].name]
+            }' | jq -s '.')
+
+          PR_COUNT=$(echo "$ALL_PRS" | jq 'length')
+          echo "📋 조회된 Open PR 수: ${PR_COUNT}"
+
+          # 제외 라벨 목록을 JSON 배열로 변환
+          EXEMPT_ARRAY=$(echo "$EXEMPT_LABELS" | jq -R 'split(",")')
+
+          STALE_PRS="[]"
+          FRESH_PRS_WITH_LABEL="[]"
+
+          for i in $(seq 0 $((PR_COUNT - 1))); do
+            PR=$(echo "$ALL_PRS" | jq ".[$i]")
+            UPDATED_AT=$(echo "$PR" | jq -r '.updated_at')
+            PR_LABELS=$(echo "$PR" | jq '.labels')
+            REPO_FULL=$(echo "$PR" | jq -r '.repo_full')
+            PR_NUMBER=$(echo "$PR" | jq -r '.number')
+            HAS_REMIND=$(echo "$PR_LABELS" | jq --arg label "$REMIND_LABEL" 'any(. == $label)')
+            HAS_EXEMPT=$(echo "$PR_LABELS" | jq --argjson exempt "$EXEMPT_ARRAY" 'any(. as $l | $exempt | any(. == $l))')
+
+            # 제외 라벨이 있으면 스킵
+            if [ "$HAS_EXEMPT" = "true" ]; then
+              continue
+            fi
+
+            # 비활성 여부 판단
+            if [[ "$UPDATED_AT" < "$STALE_THRESHOLD" ]]; then
+              # 비활성 PR → 라벨 부착
+              STALE_PRS=$(echo "$STALE_PRS" | jq --argjson pr "$PR" '. + [$pr]')
+
+              if [ "$HAS_REMIND" = "false" ]; then
+                echo "🏷️  라벨 부착: ${REPO_FULL}#${PR_NUMBER}"
+                gh api --method POST \
+                  "repos/${REPO_FULL}/issues/${PR_NUMBER}/labels" \
+                  -f "labels[]=${REMIND_LABEL}" > /dev/null 2>&1 || true
+              fi
+            else
+              # 활성 PR인데 remind 라벨이 있으면 제거
+              if [ "$HAS_REMIND" = "true" ]; then
+                echo "🔄 라벨 제거: ${REPO_FULL}#${PR_NUMBER}"
+                gh api --method DELETE \
+                  "repos/${REPO_FULL}/issues/${PR_NUMBER}/labels/${REMIND_LABEL}" \
+                  > /dev/null 2>&1 || true
+                FRESH_PRS_WITH_LABEL=$(echo "$FRESH_PRS_WITH_LABEL" | jq --argjson pr "$PR" '. + [$pr]')
+              fi
+            fi
+          done
+
+          STALE_COUNT=$(echo "$STALE_PRS" | jq 'length')
+          FRESH_REMOVED=$(echo "$FRESH_PRS_WITH_LABEL" | jq 'length')
+          echo ""
+          echo "========================================="
+          echo "  결과 요약"
+          echo "========================================="
+          echo "  전체 Open PR:      ${PR_COUNT}"
+          echo "  비활성 (리마인드):  ${STALE_COUNT}"
+          echo "  라벨 제거 (활성):   ${FRESH_REMOVED}"
+          echo "========================================="
+
+          # 다음 스텝에서 사용할 수 있도록 출력
+          echo "stale_count=${STALE_COUNT}" >> $GITHUB_OUTPUT
+
+          # JSON 데이터를 파일로 저장 (Slack 메시지 구성용)
+          echo "$STALE_PRS" > /tmp/stale_prs.json
+
+      - name: Send Slack reminder
+        if: steps.check-prs.outputs.stale_count != '0'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "⚠️ SLACK_WEBHOOK_URL이 설정되지 않아 슬랙 알림을 스킵합니다."
+            exit 0
+          fi
+
+          STALE_PRS=$(cat /tmp/stale_prs.json)
+          STALE_COUNT=$(echo "$STALE_PRS" | jq 'length')
+
+          # 레포별로 그룹핑하여 PR 목록 생성
+          PR_LIST=$(echo "$STALE_PRS" | jq -r '
+            group_by(.repo) |
+            map(
+              "📂 *" + .[0].repo + "*\n" +
+              (map("  - <" + .html_url + "|#" + (.number | tostring) + "> " + .title + "  👤 " + .user) | join("\n"))
+            ) | join("\n\n")')
+
+          MESSAGE="*👀 PR Reminder*
+
+          최근 *업데이트가 없는 PR*이 *${STALE_COUNT}건* 있어요 ⏳
+          짧게라도 확인 부탁드려요!
+
+          ━━━━━━━━━━━━━━
+          ${PR_LIST}
+          ━━━━━━━━━━━━━━
+
+          👉 *PR 작성자*: 진행 상황 공유 또는 추가 설명 부탁드려요
+          👉 *리뷰어 / 팀원*: 이미 봤다면 👍 LGTM 한 줄이면 충분해요!
+
+          🙏 작은 액션 하나가 PR 흐름을 살려줘요"
+
+          # Slack 전송 (jq로 JSON escape 처리)
+          curl -fsS -X POST -H 'Content-type: application/json' \
+            --data "$(jq -n --arg text "$MESSAGE" '{text: $text}')" \
+            "$SLACK_WEBHOOK_URL"
+
+          echo "✅ Slack 리마인드 메시지 전송 완료 (${STALE_COUNT}건)"
