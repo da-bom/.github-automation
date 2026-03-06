@@ -4,15 +4,20 @@
 #
 # 개요:
 #   Organization 내 모든 레포의 Open PR을 조회하여, 일정 시간 이상
-#   업데이트가 없는 PR에 remind-needed 라벨을 부착하고,
-#   업데이트된 PR에서는 라벨을 제거한다.
+#   실제 활동(커밋/리뷰/코멘트)이 없는 PR에 remind-needed 라벨을 부착하고,
+#   PR 코멘트로 리마인드하며, 활동이 재개된 PR에서는 라벨을 제거한다.
 #   리마인드 대상 PR이 있으면 하나의 Slack 메시지로 통합 발송한다.
+#
+# 비활성 판단 기준:
+#   updated_at이 아닌 마지막 커밋/리뷰/코멘트 시각 중 최신값을 사용.
+#   라벨 부착/제거는 이 값들에 영향을 주지 않으므로 피드백 루프가 발생하지 않음.
 #
 # 흐름:
 #   Schedule (매 2시간) 또는 수동 트리거
 #     → GitHub App Token 발급
 #     → GitHub Search API로 조직 내 모든 Open PR 조회
-#     → 4시간 이상 비활성 PR에 remind-needed 라벨 부착
+#     → PR별 마지막 활동 시각 조회 (커밋/리뷰/코멘트)
+#     → 4시간 이상 비활성 PR에 remind-needed 라벨 부착 + PR 코멘트
 #     → 활성화된 PR에서 remind-needed 라벨 제거
 #     → 리마인드 대상 PR을 레포별로 그룹핑하여 Slack 발송
 #
@@ -94,7 +99,6 @@ jobs:
 
           for i in $(seq 0 $((PR_COUNT - 1))); do
             PR=$(echo "$ALL_PRS" | jq ".[$i]")
-            UPDATED_AT=$(echo "$PR" | jq -r '.updated_at')
             PR_LABELS=$(echo "$PR" | jq '.labels')
             REPO_FULL=$(echo "$PR" | jq -r '.repo_full')
             PR_NUMBER=$(echo "$PR" | jq -r '.number')
@@ -106,9 +110,26 @@ jobs:
               continue
             fi
 
-            # 비활성 여부 판단
-            if [[ "$UPDATED_AT" < "$STALE_THRESHOLD" ]]; then
-              # 비활성 PR → 라벨 부착
+            # 마지막 의미 있는 활동 시각 조회 (커밋, 리뷰, 코멘트)
+            # 라벨 변경은 이 값들에 영향을 주지 않으므로 피드백 루프가 발생하지 않음
+            LAST_COMMIT=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}/commits" \
+              --jq 'last | .commit.committer.date // empty' 2>/dev/null || echo "")
+            LAST_REVIEW=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}/reviews" \
+              --jq 'last | .submitted_at // empty' 2>/dev/null || echo "")
+            LAST_COMMENT=$(gh api "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" \
+              --jq 'last | .created_at // empty' 2>/dev/null || echo "")
+
+            LAST_ACTIVITY=$(printf '%s\n' "$LAST_COMMIT" "$LAST_REVIEW" "$LAST_COMMENT" \
+              | grep -v '^$' | sort -r | head -1)
+
+            # 활동 기록이 전혀 없으면 PR 생성 시각(updated_at) 사용
+            if [ -z "$LAST_ACTIVITY" ]; then
+              LAST_ACTIVITY=$(echo "$PR" | jq -r '.updated_at')
+            fi
+
+            # 비활성 여부 판단 (실제 활동 기반)
+            if [[ "$LAST_ACTIVITY" < "$STALE_THRESHOLD" ]]; then
+              # 비활성 PR → 라벨 부착 + 코멘트
               STALE_PRS=$(echo "$STALE_PRS" | jq --argjson pr "$PR" '. + [$pr]')
 
               if [ "$HAS_REMIND" = "false" ]; then
@@ -116,6 +137,12 @@ jobs:
                 gh api --method POST \
                   "repos/${REPO_FULL}/issues/${PR_NUMBER}/labels" \
                   -f "labels[]=${REMIND_LABEL}" > /dev/null 2>&1 || true
+
+                # PR 코멘트 작성 (최초 라벨 부착 시에만)
+                COMMENT_BODY=$'👋 **PR 리마인드 알림입니다**\n\n이 PR이 몇 시간 동안 업데이트되지 않았어요.\n\n- 🙋 **PR 작성자**: 추가 작업 중이거나 설명이 필요하면 코멘트 남겨주세요\n- 👀 **리뷰어 / 팀원**: 이미 봤다면 LGTM 한 줄도 좋아요!\n\n바쁘실 수 있다는 점 이해합니다 🙏\n다만 작은 한 줄이 PR 흐름을 살려줘요 🙂'
+                gh api --method POST \
+                  "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" \
+                  -f body="$COMMENT_BODY" > /dev/null 2>&1 || true
               fi
             else
               # 활성 PR인데 remind 라벨이 있으면 제거
