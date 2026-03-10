@@ -32,6 +32,10 @@
 # Optional Secrets:
 #   SLACK_WEBHOOK_URL - Slack Incoming Webhook URL (미설정 시 알림 스킵)
 #
+# Optional Variables:
+#   QUIET_HOURS       - Slack 알림 차단 시간대 (예: "00-06", 미설정 시 항상 발송)
+#   QUIET_TIMEZONE    - Quiet Hours 기준 타임존 (예: "Asia/Seoul", 기본값: UTC)
+#
 # GitHub App 추가 권한 필요:
 #   Pull Requests: Read & Write (라벨 부착/제거)
 # =============================================================================
@@ -177,12 +181,42 @@ jobs:
         if: steps.check-prs.outputs.stale_count != '0'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          QUIET_HOURS: ${{ vars.QUIET_HOURS }}
+          QUIET_TIMEZONE: ${{ vars.QUIET_TIMEZONE }}
         run: |
           set -euo pipefail
 
           if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
             echo "⚠️ SLACK_WEBHOOK_URL이 설정되지 않아 슬랙 알림을 스킵합니다."
             exit 0
+          fi
+
+          # Quiet Hours 체크 (설정된 시간대에는 Slack 알림 스킵)
+          QUIET_HOURS="${QUIET_HOURS:-}"
+          QUIET_TZ="${QUIET_TIMEZONE:-UTC}"
+
+          if [ -n "$QUIET_HOURS" ]; then
+            QUIET_START=$(echo "$QUIET_HOURS" | cut -d'-' -f1 | sed 's/^0*//')
+            QUIET_END=$(echo "$QUIET_HOURS" | cut -d'-' -f2 | sed 's/^0*//')
+            CURRENT_HOUR=$(TZ="$QUIET_TZ" date +%H | sed 's/^0*//')
+
+            # 00시 처리 (sed로 빈 문자열이 되는 경우)
+            QUIET_START=${QUIET_START:-0}
+            QUIET_END=${QUIET_END:-0}
+            CURRENT_HOUR=${CURRENT_HOUR:-0}
+
+            if [ "$QUIET_START" -le "$QUIET_END" ]; then
+              # 일반 범위: 00-06 → 0시~5시
+              IN_QUIET=$(( CURRENT_HOUR >= QUIET_START && CURRENT_HOUR < QUIET_END ))
+            else
+              # 자정 경과 범위: 22-06 → 22시~5시
+              IN_QUIET=$(( CURRENT_HOUR >= QUIET_START || CURRENT_HOUR < QUIET_END ))
+            fi
+
+            if [ "$IN_QUIET" -eq 1 ]; then
+              echo "🌙 Quiet Hours (${QUIET_HOURS} ${QUIET_TZ}) - Slack 알림을 스킵합니다."
+              exit 0
+            fi
           fi
 
           STALE_PRS=$(cat /tmp/stale_prs.json)
