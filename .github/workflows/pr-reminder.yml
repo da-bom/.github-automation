@@ -10,7 +10,7 @@
 #
 # 비활성 판단 기준:
 #   updated_at이 아닌 마지막 커밋/리뷰/코멘트 시각 중 최신값을 사용.
-#   라벨 부착/제거는 이 값들에 영향을 주지 않으므로 피드백 루프가 발생하지 않음.
+#   Bot 타입 사용자의 코멘트/리뷰는 활동 판단에서 제외하여 피드백 루프를 방지함.
 #
 # 흐름:
 #   Schedule (매 2시간) 또는 수동 트리거
@@ -115,13 +115,13 @@ jobs:
             fi
 
             # 마지막 의미 있는 활동 시각 조회 (커밋, 리뷰, 코멘트)
-            # 라벨 변경은 이 값들에 영향을 주지 않으므로 피드백 루프가 발생하지 않음
+            # Bot 사용자의 코멘트/리뷰는 제외하여 리마인드 코멘트로 인한 피드백 루프 방지
             LAST_COMMIT=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}/commits" \
               --jq 'last | .commit.committer.date // empty' 2>/dev/null || echo "")
             LAST_REVIEW=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}/reviews" \
-              --jq 'last | .submitted_at // empty' 2>/dev/null || echo "")
+              --jq '[.[] | select(.user.type != "Bot")] | last | .submitted_at // empty' 2>/dev/null || echo "")
             LAST_COMMENT=$(gh api "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" \
-              --jq 'last | .created_at // empty' 2>/dev/null || echo "")
+              --jq '[.[] | select(.user.type != "Bot")] | last | .created_at // empty' 2>/dev/null || echo "")
 
             LAST_ACTIVITY=$(printf '%s\n' "$LAST_COMMIT" "$LAST_REVIEW" "$LAST_COMMENT" \
               | grep -v '^$' | sort -r | head -1)
